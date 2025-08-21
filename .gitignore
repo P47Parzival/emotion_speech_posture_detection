@@ -1,8 +1,11 @@
+venv
+
 # Ignore model artifacts and pickled data (from Emotion detection/)
 Emotion detection/*.pkl
 Emotion detection/ensemble_model_*.pkl
 Emotion detection/preprocessed_data.pkl
 Emotion detection/scaler_new.pkl
+Emotion detection/pca_new.pkl
 
 # Ignore raw dataset (optional if you don't want to store CSVs in repo)
 Emotion detection/fer2013.csv

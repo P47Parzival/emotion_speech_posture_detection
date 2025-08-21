@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <title>Real-time Emotion Detection</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; margin-top: 50px; background-color: #f0f0f0; }
+        h1 { color: #333; }
+        #video-container {
+            display: inline-block;
+            border: 5px solid #333;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+    </style>
+</head>
+<body>
+    <h1>Interview Practice - Emotion Detector</h1>
+    <div id="video-container">
+        <img src="{{ url_for('video_feed') }}" width="640" height="480">
+    </div>
+    <p>Look at the camera and express different emotions!</p>
+</body>
+</html>
