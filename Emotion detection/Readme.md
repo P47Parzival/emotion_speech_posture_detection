@@ -1,5 +1,8 @@
 # Emotion Detection Model - Context
 
+Dataset link: https://www.kaggle.com/code/enesztrk/facial-emotion-recognition-vgg19-fer2013/data
+donwloand .csv file from here, which should be in Facial Expression Recognition>fer2013>fer2013>fer2013.csv 
+
 There are **two available files** for training the emotion detection model:
 
 1. **Emotion_detection_best_accuracy_code**
