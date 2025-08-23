@@ -1,18 +1,35 @@
 import cv2
 import numpy as np
 from flask import Flask, render_template, Response
+from flask_socketio import SocketIO, emit
 from skimage import feature
 from skimage.feature import hog
 import joblib
 import time
 import threading
+import queue
+
+# Libraries for speech model 
+import torch
+import torchaudio
+from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
+import pyaudio
+import nltk
+nltk.download('punkt')
+nltk.download('averaged_perceptron_tagger')
+
+try:
+    nltk.data.find('taggers/averaged_perceptron_tagger_eng')
+except LookupError:
+    nltk.download('averaged_perceptron_tagger_eng')
 
 # --- 1. INITIALIZATION ---
 app = Flask(__name__)
+socketio = SocketIO(app)
 
 # Emotion model config
 try:
-    model = joblib.load('./Emotion detection/ensemble_model_fitted.pkl')
+    emotion_model = joblib.load('./Emotion detection/ensemble_model_fitted.pkl')
     scaler = joblib.load('./Emotion detection/scaler_new.pkl')
     pca = joblib.load('./Emotion detection/pca_new.pkl')
     face_cascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
@@ -42,6 +59,16 @@ camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 camera.set(cv2.CAP_PROP_FPS, 30)
 print("✅ Shared camera initialized")
+
+# --- Load Speech Recognition Model (Wav2Vec2) ---
+try:
+    # Use a smaller, faster model for real-time inference
+    model_name = "facebook/wav2vec2-base-960h"
+    processor = Wav2Vec2Processor.from_pretrained(model_name)
+    model = Wav2Vec2ForCTC.from_pretrained(model_name)
+    print("✅ Speech recognition model loaded successfully!")
+except Exception as e:
+    print(f"❌ Error loading speech model: {e}")
 
 # Global frame buffer and lock for thread safety
 latest_frame = None
@@ -85,6 +112,106 @@ def extract_hu_moments_from_mask(mask):
     hu_moments = -1 * np.sign(hu_moments) * np.log10(np.abs(hu_moments) + 1e-7)
     return hu_moments.flatten()
 
+# --- Simple Grammar Checker ---
+def check_grammar(text):
+    """A very basic grammar checker for interview practice."""
+    suggestions = []
+    tokens = nltk.word_tokenize(text.lower())
+    tagged = nltk.pos_tag(tokens)
+    
+    # Rule 1: Check for past tense after "I"
+    for i, (word, tag) in enumerate(tagged):
+        if i > 0 and tagged[i-1][0] == 'i' and tag.startswith('VBP'): # e.g., "I go"
+            suggestions.append(f"Suggestion: For past events, use past tense (e.g., 'I went' instead of 'I go').")
+
+    # Rule 2: Check for missing 'a' or 'the' before a noun
+    for i, (word, tag) in enumerate(tagged):
+        if tag.startswith('NN') and (i == 0 or not tagged[i-1][0] in ['a', 'an', 'the', 'my', 'your']):
+             suggestions.append(f"Suggestion: Consider using an article like 'a' or 'the' before '{word}'.")
+             
+    return list(set(suggestions)) # Return unique suggestions
+
+# --- 3. REAL-TIME SPEECH-TO-TEXT THREAD ---
+class SpeechToText:
+    def __init__(self):
+        self.audio_format = pyaudio.paInt16
+        self.channels = 1
+        self.rate = 16000
+        self.chunk = 1024
+        self.audio_interface = pyaudio.PyAudio()
+        self.stream = None
+        self.is_running = False
+        self.audio_queue = queue.Queue()
+
+    def start(self):
+        self.is_running = True
+        self.stream = self.audio_interface.open(format=self.audio_format,
+                                                channels=self.channels,
+                                                rate=self.rate,
+                                                input=True,
+                                                frames_per_buffer=self.chunk,
+                                                stream_callback=self._fill_queue)
+        self.stream.start_stream()
+        
+        # Start processing thread
+        self.processing_thread = threading.Thread(target=self._process_audio)
+        self.processing_thread.daemon = True
+        self.processing_thread.start()
+        print("🎙️  Microphone stream started.")
+
+    def stop(self):
+        self.is_running = False
+        if self.stream:
+            self.stream.stop_stream()
+            self.stream.close()
+        self.audio_interface.terminate()
+        print("🎤 Microphone stream stopped.")
+
+    def _fill_queue(self, in_data, frame_count, time_info, status):
+        self.audio_queue.put(in_data)
+        return (None, pyaudio.paContinue)
+
+    def _process_audio(self):
+        buffer = []
+        while self.is_running:
+            try:
+                data = self.audio_queue.get(timeout=1)
+                buffer.append(data)
+
+                # Process in chunks of ~1 second
+                if len(buffer) >= (self.rate // self.chunk):
+                    audio_data = b''.join(buffer)
+                    buffer = []
+                    
+                    # Convert byte data to writable torch tensor
+                    waveform_np = np.frombuffer(audio_data, dtype=np.int16).copy()  # .copy() makes it writable
+                    waveform = torch.from_numpy(waveform_np).float()
+                    
+                    # Resample if necessary (though we open stream at 16k)
+                    if self.rate != 16000:
+                        resampler = torchaudio.transforms.Resample(self.rate, 16000)
+                        waveform = resampler(waveform)
+
+                    # Process and transcribe
+                    inputs = processor(waveform, sampling_rate=16000, return_tensors="pt", padding=True)
+                    with torch.no_grad():
+                        logits = model(**inputs).logits
+                    
+                    predicted_ids = torch.argmax(logits, dim=-1)
+                    transcription = processor.batch_decode(predicted_ids)[0]
+                    
+                    if transcription:
+                        suggestions = check_grammar(transcription)
+                        # Emit to the client via WebSocket
+                        socketio.emit('speech_update', {
+                            'transcription': transcription,
+                            'suggestions': suggestions
+                        })
+            except queue.Empty:
+                continue
+
+stt = SpeechToText()
+
 # --- 3. VIDEO STREAMING GENERATOR ---
 def generate_frames():
     global latest_frame
@@ -112,7 +239,7 @@ def generate_frames():
             combined_features = np.hstack([lbp_features, hog_features])
             scaled_features = scaler.transform(combined_features.reshape(1, -1))
             pca_features = pca.transform(scaled_features)
-            prediction = model.predict(pca_features)
+            prediction = emotion_model.predict(pca_features)
             predicted_emotion = emotion_labels[prediction[0]]
             feedback_text = f"Emotion: {predicted_emotion}"
             if predicted_emotion in ['Sad', 'Angry', 'Fear']:
@@ -189,6 +316,17 @@ def video_feed():
 def posture_feed():
     return Response(generate_posture_frames(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
+
+# --- SocketIO Events for Speech ---
+@socketio.on('connect')
+def handle_connect(auth=None):
+    print('Client connected')
+    stt.start()
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    print('Client disconnected')
+    stt.stop()
 
 # --- 5. MAIN EXECUTION ---
 if __name__ == '__main__':

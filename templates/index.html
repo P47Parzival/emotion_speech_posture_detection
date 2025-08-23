@@ -5,6 +5,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
     <title>Real-time Interview Practice</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
     <style>
         body { 
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -21,8 +22,8 @@
             display: flex;
             justify-content: center;
             align-items: flex-start;
-            gap: 30px;
-            flex-wrap: wrap; /* Allows feeds to stack on smaller screens */
+            gap: 20px;
+            flex-wrap: wrap;
         }
         .feed-container {
             background-color: #fff;
@@ -30,22 +31,55 @@
             padding: 15px;
             box-shadow: 0 6px 12px rgba(0,0,0,0.1);
             width: 100%;
-            max-width: 640px;
+            max-width: 480px;
+            display: flex;
+            flex-direction: column;
         }
         .feed-container h2 {
             margin-top: 0;
             color: #0056b3;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
         }
         .feed-container img {
             border-radius: 8px;
             width: 100%;
             height: auto;
+            background-color: #000;
+        }
+        #speech-container {
+            text-align: left;
+            min-height: 360px;
+        }
+        #transcription {
+            font-size: 1.1em;
+            min-height: 100px;
+            border: 1px solid #ddd;
+            padding: 10px;
+            border-radius: 5px;
+            background-color: #fafafa;
+        }
+        #suggestions {
+            margin-top: 20px;
+        }
+        #suggestions ul {
+            list-style-type: none;
+            padding-left: 0;
+        }
+        #suggestions li {
+            background-color: #fffbe6;
+            border-left: 4px solid #facc15;
+            padding: 10px;
+            margin-bottom: 8px;
+            border-radius: 4px;
         }
     </style>
 </head>
 <body>
     <h1>Interview Practice - Real-time Feedback</h1>
 
+    <!-- FIXED: Replaced broken < class="main-container"> with proper <div> -->
     <div class="main-container">
         <!-- Emotion Detection Feed -->
         <div class="feed-container">
@@ -58,6 +92,55 @@
             <h2>Posture Detector</h2>
             <img src="{{ url_for('posture_feed') }}">
         </div>
+
+        <!-- Speech & Grammar Feed -->
+        <div class="feed-container">
+            <h2>Speech & Grammar</h2>
+            <div id="speech-container">
+                <h4>Your Live Transcription:</h4>
+                <div id="transcription">
+                    <p><i>Waiting for you to speak...</i></p>
+                </div>
+                <div id="suggestions">
+                    <h4>Suggestions:</h4>
+                    <ul id="suggestions-list">
+                        <!-- Suggestions will be added here -->
+                    </ul>
+                </div>
+            </div>
+        </div>
     </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const socket = io();
+
+            const transcriptionDiv = document.getElementById('transcription');
+            const suggestionsList = document.getElementById('suggestions-list');
+
+            socket.on('connect', () => {
+                console.log('Connected to server!');
+            });
+
+            socket.on('speech_update', (data) => {
+                console.log('Received speech update:', data);
+                
+                transcriptionDiv.innerHTML = `<p>${data.transcription}</p>`;
+
+                suggestionsList.innerHTML = '';
+                if (data.suggestions && data.suggestions.length > 0) {
+                    data.suggestions.forEach(suggestion => {
+                        const li = document.createElement('li');
+                        li.textContent = suggestion;
+                        suggestionsList.appendChild(li);
+                    });
+                }
+            });
+
+            socket.on('disconnect', () => {
+                console.log('Disconnected from server.');
+            });
+        });
+    </script>
 </body>
 </html>
