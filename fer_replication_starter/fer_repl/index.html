@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Real-time Emotion Demo</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body{font-family:system-ui,Arial;margin:0;padding:20px;background:#111;color:#eee}
+    .row{display:flex;gap:20px;align-items:flex-start}
+    video,canvas{border-radius:12px;max-width:480px;width:100%;background:#000}
+    .panel{min-width:260px;background:#1a1a1a;padding:12px;border-radius:12px}
+    .label{font-size:32px;font-weight:700;margin:8px 0}
+    .small{opacity:.8;font-size:12px}
+    button{padding:8px 12px;border-radius:8px;border:0;background:#2a2a2a;color:#eee;cursor:pointer}
+    button:disabled{opacity:.5;cursor:not-allowed}
+    progress{width:100%}
+  </style>
+</head>
+<body>
+  <h1>Real-time Emotion (Webcam → Python)</h1>
+  <p class="small">Start the Flask server (see steps below), then click <b>Start</b>.</p>
+
+  <div class="row">
+    <div>
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="canvas" style="display:none;"></canvas>
+      <div style="margin-top:10px;display:flex;gap:10px">
+        <button id="btnStart">Start</button>
+        <button id="btnStop" disabled>Stop</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div>Prediction:</div>
+      <div class="label" id="pred">—</div>
+      <div id="probs" class="small"></div>
+      <div id="status" class="small" style="margin-top:10px;opacity:.7">idle</div>
+    </div>
+  </div>
+
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const predEl = document.getElementById('pred');
+    const probsEl = document.getElementById('probs');
+    const statusEl = document.getElementById('status');
+    const btnStart = document.getElementById('btnStart');
+    const btnStop = document.getElementById('btnStop');
+
+    let streaming = false;
+    let timer = null;
+
+    async function startCam() {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+      video.srcObject = stream;
+      await video.play();
+      // set canvas size
+      const w = video.videoWidth, h = video.videoHeight;
+      canvas.width = w; canvas.height = h;
+    }
+
+    async function sendFrame() {
+      if (!streaming) return;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.7));
+      statusEl.textContent = 'predicting...';
+
+      try {
+        const form = new FormData();
+        form.append('frame', blob, 'frame.jpg');
+        const r = await fetch('http://localhost:5000/predict', { method: 'POST', body: form });
+        const js = await r.json();
+        predEl.textContent = js.label || '—';
+        if (js.probs) {
+          const lines = Object.entries(js.probs)
+            .sort((a,b)=>b[1]-a[1])
+            .map(([k,v]) => `${k}: ${(v*100).toFixed(1)}%`);
+          probsEl.innerHTML = lines.join('<br/>');
+        } else {
+          probsEl.textContent = '';
+        }
+        statusEl.textContent = 'ok';
+      } catch (e) {
+        statusEl.textContent = 'server not reachable';
+      }
+
+      // schedule next frame
+      timer = setTimeout(sendFrame, 300);
+    }
+
+    btnStart.onclick = async () => {
+      btnStart.disabled = true; btnStop.disabled = false;
+      await startCam();
+      streaming = true;
+      sendFrame();
+    };
+    btnStop.onclick = () => {
+      streaming = false;
+      if (timer) clearTimeout(timer);
+      btnStart.disabled = false; btnStop.disabled = true;
+      statusEl.textContent = 'stopped';
+    };
+  </script>
+</body>
+</html>
