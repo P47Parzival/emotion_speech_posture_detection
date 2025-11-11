@@ -260,10 +260,11 @@ def generate_frames():
 # --- Posture Feed Generator ---
 def generate_posture_frames():
     global latest_frame
+    posture_history = []  # Track last 10 postures for stability
+    
     while True:
         with frame_lock:
             if latest_frame is None:
-                print("❌ No frame available for posture feed")
                 time.sleep(0.1)
                 continue
             frame = latest_frame.copy()
@@ -281,22 +282,100 @@ def generate_posture_frames():
                 cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 3)
                 contour_mask = np.zeros(frame.shape[:2], dtype="uint8")
                 cv2.drawContours(contour_mask, [largest_contour], -1, 255, -1)
+                
+                # Extract features and predict
                 hu_features = extract_hu_moments_from_mask(contour_mask)
                 prediction = posture_model.predict(hu_features.reshape(1, -1))
                 predicted_posture = posture_labels[prediction[0]]
-                feedback_text = f"Posture: {predicted_posture}"
-                if predicted_posture == 'Sitting':
-                    x, y, w, h = cv2.boundingRect(largest_contour)
-                    aspect_ratio = h / w
-                    if aspect_ratio < 1.5:
-                        feedback_text += " - Sit up straight!"
+                
+                # Track history for stability (avoid flickering)
+                posture_history.append(predicted_posture)
+                if len(posture_history) > 10:
+                    posture_history.pop(0)
+                
+                # Get most common posture in last 10 frames
+                stable_posture = max(set(posture_history), key=posture_history.count)
+                
+                # Calculate geometric features
+                x, y, w, h = cv2.boundingRect(largest_contour)
+                aspect_ratio = h / w
+                area = cv2.contourArea(largest_contour)
+                frame_area = frame.shape[0] * frame.shape[1]
+                area_ratio = area / frame_area
+                
+                # Calculate center of mass (for slouch detection)
+                M = cv2.moments(largest_contour)
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                    center_y_ratio = cy / frame.shape[0]  # Normalized vertical position
+                else:
+                    center_y_ratio = 0.5
+                
+                # ===================================================
+                # IMPROVED FEEDBACK LOGIC FOR ALL 4 POSTURES
+                # ===================================================
+                
+                feedback_text = f"Posture: {stable_posture}"
+                feedback_color = (0, 255, 0)  # Default: Green (good)
+                
+                if stable_posture == 'Sitting':
+                    # Sitting posture analysis
+                    if aspect_ratio < 1.3:
+                        feedback_text += " - SLOUCHING! Sit up straight!"
+                        feedback_color = (0, 0, 255)  # Red
+                    elif aspect_ratio < 1.6:
+                        feedback_text += " - Lean back a bit more"
+                        feedback_color = (0, 165, 255)  # Orange
+                    elif center_y_ratio > 0.6:
+                        feedback_text += " - Leaning forward too much"
+                        feedback_color = (0, 165, 255)  # Orange
                     else:
-                        feedback_text += " - Good posture!"
-                cv2.putText(frame, feedback_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+                        feedback_text += " - Excellent posture! ✓"
+                        feedback_color = (0, 255, 0)  # Green
+                
+                elif stable_posture == 'Standing':
+                    # Standing posture analysis
+                    if aspect_ratio < 2.0:
+                        feedback_text += " - Stand taller! Straighten your back"
+                        feedback_color = (0, 0, 255)  # Red
+                    elif area_ratio < 0.15:
+                        feedback_text += " - Move closer to camera or stand straighter"
+                        feedback_color = (0, 165, 255)  # Orange
+                    else:
+                        feedback_text += " - Great stance! ✓"
+                        feedback_color = (0, 255, 0)  # Green
+                
+                elif stable_posture == 'Bending':
+                    # Bending posture analysis
+                    feedback_text += " - Avoid bending during interview!"
+                    feedback_color = (0, 0, 255)  # Red
+                    
+                    if aspect_ratio < 1.0:
+                        feedback_text += " Bend detected (too low)"
+                    else:
+                        feedback_text += " Slight forward lean"
+                
+                elif stable_posture == 'Lying':
+                    # Lying posture analysis
+                    feedback_text += " - SIT UP! Don't lie down!"
+                    feedback_color = (0, 0, 255)  # Red
+                    
+                    if area_ratio > 0.4:
+                        feedback_text += " (Taking up too much screen)"
+                
+                # Draw feedback on frame
+                cv2.putText(frame, feedback_text, (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, feedback_color, 2)
+                
+                # Draw additional metrics (debug mode - optional)
+                cv2.putText(frame, f"Aspect Ratio: {aspect_ratio:.2f}", (10, 60),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                cv2.putText(frame, f"Area Ratio: {area_ratio:.2%}", (10, 80),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
         ret, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
         if not ret:
-            print("❌ Failed to encode frame for posture feed")
             continue
         frame_bytes = buffer.tobytes()
         yield (b'--frame\r\n'
